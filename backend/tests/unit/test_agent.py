@@ -60,3 +60,27 @@ def test_documentation_agent_uses_list_files_tool() -> None:
     # Check that list_files was used
     tool_names = [tc.get("tool") for tc in data["tool_calls"]]
     assert "list_files" in tool_names, "Expected list_files tool to be called"
+
+
+def test_system_agent_uses_read_file_for_framework_question() -> None:
+    """Test that agent uses read_file to find framework info in source code."""
+    data = _run_agent("What framework does the backend use?")
+
+    assert "answer" in data, "Missing 'answer' field"
+    assert "tool_calls" in data, "Missing 'tool_calls' field"
+
+    # Check that read_file was used to inspect source code
+    tool_names = [tc.get("tool") for tc in data["tool_calls"]]
+    assert "read_file" in tool_names, "Expected read_file tool to be called"
+
+
+def test_system_agent_uses_query_api_for_data_question() -> None:
+    """Test that agent uses query_api to get data from backend."""
+    data = _run_agent("How many items are in the database?")
+
+    assert "answer" in data, "Missing 'answer' field"
+    assert "tool_calls" in data, "Missing 'tool_calls' field"
+
+    # Check that query_api was used
+    tool_names = [tc.get("tool") for tc in data["tool_calls"]]
+    assert "query_api" in tool_names, "Expected query_api tool to be called"
