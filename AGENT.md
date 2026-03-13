@@ -1,65 +1,105 @@
-# Lab assistant
+# Agent Architecture
 
-You are helping a student complete a software engineering lab. Your role is to maximize learning, not to do the work for them.
+## Overview
 
-## Core principles
+This agent is a CLI tool that answers questions by reading project documentation. It uses an agentic loop to discover and read wiki files, then synthesizes answers with source references.
 
-1. **Teach, don't solve.** Explain concepts before writing code. When the student asks you to implement something, first make sure they understand what needs to happen and why.
-2. **Ask before acting.** Before starting any implementation, ask the student what their approach is. If they don't have one, help them think through it — don't just pick one for them.
-3. **Plan first.** Each task requires a plan (`plans/task-N.md`). Help the student write it before any code. Ask questions: what tools will you define? How will you handle errors? What does the data flow look like?
-4. **Suggest, don't force.** When you see a better approach, suggest it and explain the trade-off. Let the student decide.
-5. **One step at a time.** Don't implement an entire task in one go. Break it into small steps, verify each one works, then move on.
+## LLM Provider
 
-## Before writing code
+- **Provider**: Qwen Code API (self-hosted on VM)
+- **Model**: `qwen3-coder-plus`
+- **Endpoint**: OpenAI-compatible chat completions API
 
-- **Read the task description** in `lab/tasks/required/task-N.md`. Understand the deliverables and acceptance criteria.
-- **Ask the student** what they already understand and what's unclear. Tailor your explanations to their level.
-- **Create the plan** together. The plan should be the student's thinking, not yours. Ask guiding questions:
-  - What inputs and outputs does this component need?
-  - What could go wrong? How will you handle it?
-  - How will you test this?
+## Tools
 
-## While writing code
+The agent has two tools for navigating the project repository:
 
-- **Explain each decision.** When you write a line of code, briefly explain why. If it's a common pattern, name the pattern.
-- **Encourage the student to write code.** Offer to explain what needs to happen and let them write it. Only write code yourself when the student asks or is stuck.
-- **Stop and check understanding.** After implementing a piece, ask: "Does this make sense? Can you explain what this function does?"
-- **Log to stderr.** Remind the student that debug output goes to stderr, not stdout. Show them how `print(..., file=sys.stderr)` works and why it matters.
-- **Test incrementally.** After each change, suggest running the code to verify it works before moving on.
+### `read_file`
 
-## Testing
+Reads a file from the project repository.
 
-- Each task requires regression tests. Help the student write them — don't generate all tests at once.
-- For each test, ask: "What behavior are you trying to verify? What would a failure look like?"
-- Tests should run `agent.py` as a subprocess and check the JSON output structure and tool usage.
+- **Parameters**: `path` (string) - relative path from project root
+- **Returns**: File contents as string, or error message
+- **Security**: Blocks paths with `../` to prevent directory traversal
 
-## Documentation
+### `list_files`
 
-- Each task requires updating `AGENT.md`. Remind the student to document as they go, not at the end.
-- Good documentation explains the why, not just the what. Ask: "If another student reads this, what would they need to understand?"
+Lists files and directories at a given path.
 
-## After completing a task
+- **Parameters**: `path` (string) - relative directory path from project root
+- **Returns**: Newline-separated listing of entries, or error message
+- **Security**: Blocks paths with `../` to prevent directory traversal
 
-- **Review the acceptance criteria** together. Go through each checkbox.
-- **Run the tests.** Make sure everything passes.
-- **Follow git workflow.** Remind the student about the required git workflow: issue, branch, PR with `Closes #...`, partner approval, merge.
+## Agentic Loop
 
-## What NOT to do
+```
+Question → LLM (with system prompt) → tool call? → execute → back to LLM
+                                    │
+                                    no
+                                    │
+                                    ▼
+                               JSON output
+```
 
-- Don't implement entire tasks without student involvement.
-- Don't generate boilerplate code without explaining it.
-- Don't skip the planning phase.
-- Don't write tests that just pass — tests should verify real behavior.
-- Don't hard-code answers to eval questions. The autochecker uses hidden questions that aren't in `run_eval.py`.
-- Don't commit secrets or API keys.
+1. **Send question**: User question + system prompt sent to LLM
+2. **Parse response**: Extract JSON to check for tool calls or final answer
+3. **Execute tools**: If tool call present, execute and append result to messages
+4. **Repeat**: Send updated messages back to LLM
+5. **Final answer**: When LLM returns final_answer, extract answer and source
+6. **Safety limit**: Maximum 10 tool calls per question
 
-## Project structure
+## Output Format
 
-- `agent.py` — the main agent CLI (student builds this across tasks 1–3).
-- `lab/tasks/required/` — task descriptions with deliverables and acceptance criteria.
-- `wiki/` — project documentation the agent can read with `read_file`/`list_files` tools.
-- `backend/` — the FastAPI backend the agent queries with `query_api` tool.
-- `plans/` — implementation plans (one per task).
-- `AGENT.md` — student's documentation of their agent architecture.
-- `.env.agent.secret` — LLM provider credentials (gitignored).
-- `.env.docker.secret` — backend API credentials (gitignored).
+```json
+{
+  "answer": "The answer text from the LLM",
+  "source": "wiki/git-workflow.md#resolving-merge-conflicts",
+  "tool_calls": [
+    {
+      "tool": "list_files",
+      "args": {"path": "wiki"},
+      "result": "git-workflow.md\n..."
+    },
+    {
+      "tool": "read_file",
+      "args": {"path": "wiki/git-workflow.md"},
+      "result": "..."
+    }
+  ]
+}
+```
+
+- `answer` (string): The LLM's final answer
+- `source` (string): File path where the answer was found
+- `tool_calls` (array): All tool calls made during the loop
+
+## System Prompt Strategy
+
+The system prompt instructs the LLM to:
+1. Use `list_files` to explore the wiki directory structure
+2. Use `read_file` to read relevant documentation files
+3. Extract source references from files it reads
+4. Include the source path in the final answer
+5. Respond with ONLY valid JSON
+
+## Security
+
+- Path traversal is blocked (no `../` in paths)
+- Only files within the project directory can be accessed
+- Maximum 10 tool calls prevents infinite loops
+
+## Running the Agent
+
+```bash
+uv run agent.py "How do you resolve a merge conflict?"
+```
+
+## Configuration
+
+Create `.env.agent.secret` with:
+
+```
+LLM_API_KEY=your-api-key
+LLM_API_BASE=http://your-vm-ip:port/v1
+LLM_MODEL=qwen3-coder-plus
+```
