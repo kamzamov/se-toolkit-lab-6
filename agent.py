@@ -49,16 +49,20 @@ Tool selection guide:
 
 query_api parameters:
 - method: HTTP method (GET, POST, PUT, DELETE)
-- path: API endpoint path (e.g., /items/, /analytics/completion-rate)
-- body: Optional JSON request body for POST/PUT (as JSON string)
+- path: API endpoint path with query params for GET (e.g., /items/, /analytics/completion-rate?lab=lab-99)
+- body: JSON request body for POST/PUT only (as JSON string, do NOT use for GET requests)
 - use_auth: Whether to include authentication (default: true, set to false to test unauthenticated access)
 
-IMPORTANT: 
-- You must respond with ONLY valid JSON. No other text.
+For GET requests with parameters, ALWAYS include them in the path as query parameters (e.g., /analytics/top-learners?lab=lab-01&limit=10). Do NOT use the body field for GET requests.
+
+IMPORTANT:
+- You must respond with ONLY valid JSON. No other text, no explanations, no thinking out loud.
+- Make ONLY ONE tool call at a time. Wait for the result before making another call.
 - After gathering enough information (2-4 tool calls), provide a final answer.
 - Don't keep calling tools indefinitely - synthesize what you learned into a clear answer.
+- NEVER include any text outside the JSON object. Start your response with { and end with }.
 
-To call a tool, respond with EXACTLY this JSON format:
+To call a tool, respond with EXACTLY this JSON format (ONE tool call per response):
 {"tool_call": {"name": "tool_name", "arguments": {"arg1": "value1", ...}}}
 
 To give a final answer, respond with EXACTLY this JSON format:
@@ -209,8 +213,45 @@ def extract_json_from_response(content: str) -> dict | None:
     """Extract JSON object from LLM response."""
     content = content.strip()
 
-    # Try to find JSON object in the content
-    match = re.search(r'\{.*\}', content, re.DOTALL)
+    # Try parsing the whole content as JSON first
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        pass
+
+    # Try to find a balanced JSON object in the content
+    # Look for the first { and find its matching }, accounting for strings
+    if content.startswith('{'):
+        depth = 0
+        in_string = False
+        escape_next = False
+        for i, char in enumerate(content):
+            if escape_next:
+                escape_next = False
+                continue
+            if char == '\\' and not escape_next:
+                escape_next = True
+                continue
+            if char == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if char == '{':
+                depth += 1
+            elif char == '}':
+                depth -= 1
+                if depth == 0:
+                    json_str = content[:i+1]
+                    try:
+                        return json.loads(json_str)
+                    except json.JSONDecodeError:
+                        # Try to fix common JSON issues (like unescaped quotes in strings)
+                        # by using a more lenient approach
+                        pass
+
+    # Fallback: try to find any simple JSON object
+    match = re.search(r'\{[^{}]*\}', content)
     if match:
         json_str = match.group(0)
         try:
@@ -218,11 +259,7 @@ def extract_json_from_response(content: str) -> dict | None:
         except json.JSONDecodeError:
             pass
 
-    # Try parsing the whole content as JSON
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        return None
+    return None
 
 
 def run_agent(question: str) -> dict:
